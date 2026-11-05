@@ -64,8 +64,18 @@ def sentence_length_spread(text: str) -> float:
     `stdev` raises on fewer than two values. Decide what that should return
     before the attack set decides for you.
     """
-    # TODO: replace this
-    return 0.0
+    lengths = [len(words(s)) for s in sentences(text)]
+    lengths = [n for n in lengths if n > 0]
+
+    if len(lengths) < 2:
+        return 0.0
+
+    mean_length = statistics.mean(lengths)
+
+    if mean_length == 0:
+        return 0.0
+
+    return round(statistics.stdev(lengths) / mean_length, 4)
 
 
 def type_token_ratio(text: str) -> float:
@@ -80,8 +90,12 @@ def type_token_ratio(text: str) -> float:
     directly comparable on it, and if your test inputs vary a lot in length,
     that alone can look like a signal.
     """
-    # TODO: replace this
-    return 0.0
+    tokens = words(text)
+
+    if not tokens:
+        return 0.0
+
+    return round(len(set(tokens)) / len(tokens), 4)
 
 
 def punctuation_density(text: str) -> float:
@@ -94,8 +108,14 @@ def punctuation_density(text: str) -> float:
         more interesting than full stops, because they vary more between
         writers.
     """
-    # TODO: replace this
-    return 0.0
+    tokens = words(text)
+
+    if not tokens:
+        return 0.0
+
+    punctuation = re.findall(r"[.,!?;:—–-]", text)
+
+    return round(len(punctuation) / len(tokens), 4)
 
 
 # ── Combining them ───────────────────────────────────────────────────────────
@@ -122,9 +142,34 @@ def style_signal(text: str) -> float:
     you trust it. Plain and ordinary, not formal: formal prose reads as *human*
     to signal one, and it is plain writing that gets accused.
     """
-    # TODO: replace this
-    return 0.5
+    tokens = words(text)
 
+    if not tokens:
+        return 0.5
+
+    # 1. Sentence-length consistency
+    if len(sentences(text)) < 2:
+        spread_ai = 0.5  # Neutral: insufficient evidence
+    else:
+        spread = sentence_length_spread(text)
+        spread_ai = 1.0 - min(spread / 1.0, 1.0)
+
+    # 2. Vocabulary repetition
+    diversity = type_token_ratio(text)
+    diversity_ai = 1.0 - diversity
+
+    # 3. Punctuation frequency
+    density = punctuation_density(text)
+    punctuation_ai = 1.0 - min(density / 0.3, 1.0)
+
+    # Weighted average
+    score = (
+        0.4 * spread_ai
+        + 0.4 * diversity_ai
+        + 0.2 * punctuation_ai
+    )
+
+    return round(score, 4)
 
 if __name__ == "__main__":
     import sys

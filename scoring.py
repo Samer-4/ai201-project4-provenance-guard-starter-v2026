@@ -52,10 +52,10 @@ def combine_signals(model_score: float, style_score: float) -> float:
     The weights in config.py are placeholders. Change them, or ignore them and
     write a different rule.
     """
-    # TODO: replace this
-    return (
+    return round(
         config.WEIGHT_MODEL_SIGNAL * model_score
-        + config.WEIGHT_STYLE_SIGNAL * style_score
+        + config.WEIGHT_STYLE_SIGNAL * style_score,
+        4
     )
 
 
