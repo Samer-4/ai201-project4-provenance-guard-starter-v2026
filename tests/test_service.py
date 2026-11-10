@@ -124,6 +124,55 @@ class TestInvalidInput(ServiceTestCase):
         self.assertEqual(self.rejections()[-1]["reason"], "invalid_text")
 
 
+class TestReadableContentGuard(ServiceTestCase):
+    """
+    Unit 8 improvement. The baseline attack run put confident labels on (or
+    crashed on) text with no readable words: MF02-MF07. Each shape here is the
+    same kind of input; none may reach the detector.
+    """
+
+    UNREADABLE = {
+        "single character (MF02 crashed with ValueError)": "a",
+        "control characters (MF03 was labelled human)": "\x00\x01\x02 test \x1b[31mred\x1b[0m",
+        "punctuation only (MF04 was labelled human)": "!!! ??? ... ,,, ;;; --- ((( )))",
+        "one very long word (MF05 was labelled ai)": "a" * 4000,
+        "emoji only (MF06 was labelled ai)": "\U0001F642\U0001F643\U0001F600" * 30,
+        "right-to-left script (MF07 was labelled ai)": "هذا نص باللغة العربية لاختبار النظام",
+        "four words": "Four words right here.",
+    }
+
+    def setUp(self):
+        super().setUp()
+
+        def must_not_run(text):
+            raise AssertionError("detector called on unreadable text")
+        detector.model_signal = must_not_run
+
+    def test_unreadable_text_is_refused_before_scoring_and_logged(self):
+        for name, text in self.UNREADABLE.items():
+            with self.subTest(name):
+                response = self.submit(text=text, creator_id="guard_test")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json()["error"], "not_enough_text")
+
+        self.assertEqual(self.decisions(), [])
+        rejections = self.rejections()
+        self.assertEqual(len(rejections), len(self.UNREADABLE))
+        for entry in rejections:
+            self.assertEqual(entry["reason"], "insufficient_text")
+            self.assertLess(entry["readable_words"], config.MIN_READABLE_WORDS)
+            self.assertTrue(NINE_FIELDS <= set(entry))
+
+    def test_threshold_boundary_and_short_genuine_writing_still_scored(self):
+        detector.model_signal = lambda text: 0.5
+        for text in ("Five words are right here.",                 # exactly 5
+                     "Went for a run. Legs hurt. Worth it.",        # FP08, 8 words
+                     "Teams that communicate well do better. This is widely understood."):
+            with self.subTest(text=text):
+                self.assertEqual(self.submit(text=text).status_code, 200)
+        self.assertEqual(len(self.decisions()), 3)
+
+
 class TestFailuresAreLogged(ServiceTestCase):
     def test_detector_failure_is_logged_not_silent(self):
         def unavailable(text):

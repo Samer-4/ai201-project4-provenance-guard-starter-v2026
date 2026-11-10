@@ -271,6 +271,25 @@ def _submit():
         )
         return jsonify({"error": "Valid creator_id is required"}), 400
 
+    # Unit 8 improvement: refuse text with too few readable words to assess,
+    # rather than putting a confident label on symbols, emoji or a script the
+    # signals can't read. See config.MIN_READABLE_WORDS.
+    readable_words = len(stylometry.words(text))
+    if readable_words < config.MIN_READABLE_WORDS:
+        audit.log_rejection(
+            creator_id=creator_id[:100],
+            reason="insufficient_text",
+            route="/submit",
+            text=_shape_of(text),
+            readable_words=readable_words,
+        )
+        return jsonify({
+            "error": "not_enough_text",
+            "message": (f"There isn't enough readable text to assess. This service "
+                        f"needs at least {config.MIN_READABLE_WORDS} words of English "
+                        f"prose, and cannot assess emoji, symbols or other scripts."),
+        }), 400
+
     model_score = detector.model_signal(text)
     content_id = str(uuid.uuid4())
     style_score = stylometry.style_signal(text)

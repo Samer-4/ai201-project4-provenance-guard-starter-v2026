@@ -74,6 +74,13 @@ WEIGHT_STYLE_SIGNAL = 0.5
 HUMAN_THRESHOLD = 0.35
 AI_THRESHOLD = 0.65
 
+# Unit 8 improvement. Below this many readable words (as `stylometry.words`
+# counts them) neither signal is measuring authorship: signal two has nothing
+# to count and falls back to a neutral 0.5, and signal one scores byte-level
+# predictability of symbols, emoji or non-Latin script — or crashes on fewer
+# than three tokens. Such text is refused with a 400 instead of labelled.
+MIN_READABLE_WORDS = 5
+
 # ⚠️ One thing that catches people out in Milestone 5. A weighted average can
 # only land between its two inputs — so while `style_signal` is still the stub
 # returning 0.5, the combined score can never leave 0.25–0.75 no matter what
