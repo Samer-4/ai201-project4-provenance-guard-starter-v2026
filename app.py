@@ -37,6 +37,35 @@ import scoring
 app = Flask(__name__)
 
 
+# ── Audit helpers (unit 8, Milestone 1) ───────────────────────────────────────
+# Every request that doesn't become a decision still leaves a rejection entry.
+# These entries never contain the submitted text — only its type and length —
+# so the log can't become a copy of what writers sent.
+
+def _payload_dict():
+    """The JSON body if it is an object, else None. Never raises."""
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else None
+
+
+def _creator_for_log(payload) -> str:
+    """A creator_id that is safe to write: a short string, or a placeholder."""
+    if not isinstance(payload, dict):
+        return "unknown"
+    creator = payload.get("creator_id")
+    if isinstance(creator, str) and creator.strip():
+        return creator[:100]
+    return "unknown"
+
+
+def _shape_of(value) -> dict:
+    """What a field looked like, without recording what it said."""
+    shape = {"type": type(value).__name__}
+    if isinstance(value, str):
+        shape["length"] = len(value)
+    return shape
+
+
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
 # Off until you turn it on. In unit 8, Milestone 1:
 #
@@ -103,12 +132,10 @@ if config.RATE_LIMITING_ENABLED:
 
         ⚠️ An attack that shows up only as an absence is one you'll never find.
         """
-        payload = request.get_json(silent=True)
-        if not isinstance(payload, dict):
-            payload = {}
         audit.log_rejection(
-            creator_id=payload.get("creator_id", "unknown"),
+            creator_id=_creator_for_log(_payload_dict()),
             reason="rate_limited",
+            route=request.path,
             limit=str(exc.description),
         )
         return jsonify({
@@ -202,15 +229,46 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
+    try:
+        return _submit()
+    except Exception as exc:  # noqa: BLE001
+        # Unit 8 instrumentation: an unhandled error is still a 500 (the attack
+        # harness should keep seeing it as BROKE), but it now leaves a trace
+        # instead of vanishing. Only the exception type is logged — messages
+        # from the model stack can echo paths or auth details.
+        audit.log_rejection(
+            creator_id=_creator_for_log(_payload_dict()),
+            reason="internal_error",
+            route="/submit",
+            error_type=type(exc).__name__,
+        )
+        app.logger.exception("Unhandled error in /submit")
+        return jsonify({"error": "internal_error",
+                        "message": "The submission could not be scored."}), 500
+
+
+def _submit():
     payload = request.get_json(silent=True) or {}
 
     text = payload.get("text")
     creator_id = payload.get("creator_id")
 
     if not isinstance(text, str) or not text.strip():
+        audit.log_rejection(
+            creator_id=_creator_for_log(payload),
+            reason="invalid_text",
+            route="/submit",
+            text=_shape_of(text),
+        )
         return jsonify({"error": "Valid text is required"}), 400
 
     if not isinstance(creator_id, str) or not creator_id.strip():
+        audit.log_rejection(
+            creator_id="unknown",
+            reason="invalid_creator_id",
+            route="/submit",
+            creator_id_shape=_shape_of(creator_id),
+        )
         return jsonify({"error": "Valid creator_id is required"}), 400
 
     model_score = detector.model_signal(text)
@@ -260,6 +318,21 @@ def appeal():
     to the person on the other end. It's the only thing standing between a
     wrong accusation and nothing at all.
     """
+    try:
+        return _appeal()
+    except Exception as exc:  # noqa: BLE001
+        audit.log_rejection(
+            creator_id="unknown",
+            reason="internal_error",
+            route="/appeal",
+            error_type=type(exc).__name__,
+        )
+        app.logger.exception("Unhandled error in /appeal")
+        return jsonify({"error": "internal_error",
+                        "message": "The appeal could not be recorded."}), 500
+
+
+def _appeal():
     payload = request.get_json(silent=True) or {}
 
     content_id = payload.get("content_id")
@@ -267,9 +340,13 @@ def appeal():
 
     # Validate the request
     if not isinstance(content_id, str) or not content_id.strip():
+        audit.log_rejection(creator_id="unknown", reason="invalid_content_id",
+                            route="/appeal", content_id_shape=_shape_of(content_id))
         return jsonify({"error": "Valid content_id is required"}), 400
 
     if not isinstance(reasoning, str) or not reasoning.strip():
+        audit.log_rejection(creator_id="unknown", reason="invalid_reasoning",
+                            route="/appeal", appeal_for=content_id[:100])
         return jsonify({"error": "Valid reasoning is required"}), 400
 
     # Find the original submission
@@ -281,6 +358,8 @@ def appeal():
     )
 
     if original is None:
+        audit.log_rejection(creator_id="unknown", reason="appeal_not_found",
+                            route="/appeal", appeal_for=content_id[:100])
         return jsonify({"error": "Content ID not found"}), 404
 
     # Record the appeal
