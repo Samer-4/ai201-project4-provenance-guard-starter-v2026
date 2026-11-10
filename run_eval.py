@@ -66,6 +66,45 @@ def describe(body):
     return json.dumps(body)[:120]
 
 
+def run_appeals(url, scenario, trial, timeout):
+    """
+    Criterion 4 can't be expressed as text alone: submit, then appeal the
+    content_id that came back, then check the log actually moved it to
+    `under_review`. One result per appeal.
+    """
+    import requests
+
+    results, appealed = [], []
+    for i, text in enumerate(scenario["appeals"], 1):
+        result = {"sent": text[:70]}
+        try:
+            submitted = requests.post(f"{url}/submit", timeout=timeout, json={
+                "text": text, "creator_id": f"eval_appeal_{i}"})
+            result["submit_status"] = submitted.status_code
+            content_id = (submitted.json() or {}).get("content_id")
+            result["content_id"] = content_id
+            if content_id:
+                appeal = requests.post(f"{url}/appeal", timeout=timeout, json={
+                    "content_id": content_id,
+                    "reasoning": f"Evaluation appeal {i}, trial {trial}: I wrote this."})
+                result["appeal_status"] = appeal.status_code
+                result["status"] = (appeal.json() or {}).get("status")
+                appealed.append(content_id)
+        except Exception as exc:  # noqa: BLE001
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        results.append(result)
+
+    try:
+        log = requests.get(f"{url}/log", timeout=timeout).json()["entries"]
+    except Exception:  # noqa: BLE001
+        log = []
+    under_review = {e.get("content_id") for e in log
+                    if e.get("event") == "appeal" and e.get("status") == "under_review"}
+    for result in results:
+        result["logged_under_review"] = result.get("content_id") in under_review
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -106,12 +145,23 @@ def main():
     if args.trials < 3:
         print(f"!! {args.trials} trial(s). The submission asks for three.\n")
 
+    missing = list(getattr(scenarios, "MISSING", []))
+    for note in missing:
+        print(f"!! NOT RUN: {note}")
+
     rows = []
     for scenario in scenarios.SCENARIOS:
         print(f"\n{scenario['name']}  (criterion {scenario.get('criterion') or '—'})")
 
         trials = []
         for trial in range(1, args.trials + 1):
+            if "appeals" in scenario:
+                results = run_appeals(args.url, scenario, trial, args.timeout)
+                trials.append(results)
+                print(f"  trial {trial}: " + ", ".join(
+                    str(r.get("status") or r.get("error") or "—") for r in results))
+                continue
+
             results = []
             for i, body in enumerate(bodies_for(scenario), 1):
                 preview = describe(body)
@@ -138,10 +188,10 @@ def main():
 
         rows.append({"scenario": scenario, "trials": trials})
 
-    write_report(rows, args)
+    write_report(rows, args, missing)
 
 
-def write_report(rows, args):
+def write_report(rows, args, missing=()):
     config.RESULTS_DIR.mkdir(exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
     label = f"_{args.label}" if args.label else ""
@@ -161,6 +211,8 @@ def write_report(rows, args):
         "Fill in Target from `criteria.md`, and Run and Verdict from the output",
         "underneath. Whether a trial passed depends on the criterion you wrote.",
         "",
+        *[f"> **Not run:** {note}" for note in missing],
+        *([""] if missing else []),
         f"| Criterion | Target | {headers} | Verdict |",
         f"|---|---|{divider}|---|",
     ]
